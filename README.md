@@ -31,3 +31,5 @@ my-crypto-project/
 │
 └── reports/
     └── final_report.pdf
+
+    suphakit
