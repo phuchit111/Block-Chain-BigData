@@ -1,0 +1,8 @@
+crypto-project/data/
+__pycache__/
+*.pkl
+.ipynb_checkpoints/
+.DS_Store
+.env
+.venv
+node_modules/
