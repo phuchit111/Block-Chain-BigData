@@ -6,7 +6,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from utils import (
     load_data, load_models, get_feature_importance,
-    get_model_metrics, get_confusion_matrix_data, create_export_data
+    get_model_metrics, get_confusion_matrix_data, create_export_data,
+    get_shap_global_values, get_shap_single_values
 )
 
 # Page Config
@@ -546,6 +547,105 @@ if df is not None and models:
     st.plotly_chart(fig_cm, use_container_width=True)
     
     # ============================================
+    # 3.5 SHAP GLOBAL FEATURE IMPORTANCE
+    # ============================================
+    st.markdown("""
+    <div class="section-header">
+        <h2><span class="material-icons-round">auto_awesome</span>SHAP Feature Importance</h2>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("<p style='color: #888; margin-bottom: 1rem;'>SHAP (SHapley Additive exPlanations) แสดงว่า features ไหนมีอิทธิพลต่อการทำนายของโมเดลมากที่สุด</p>", unsafe_allow_html=True)
+    
+    with st.spinner('Calculating SHAP values...'):
+        shap_importance, shap_explainer = get_shap_global_values(
+            model, X_test, selected_model_name
+        )
+    
+    if shap_importance is not None:
+        col_shap_bar, col_shap_compare = st.columns([1, 1])
+        
+        with col_shap_bar:
+            top_n_shap = 15
+            shap_top = shap_importance.head(top_n_shap)
+            
+            fig_shap_bar = go.Figure(go.Bar(
+                x=shap_top['SHAP_Importance'].values[::-1],
+                y=shap_top['Feature'].values[::-1],
+                orientation='h',
+                marker=dict(
+                    color=shap_top['SHAP_Importance'].values[::-1],
+                    colorscale=[[0, '#1E1E2E'], [0.3, '#7B2DFF'], [0.7, '#00D4FF'], [1, '#00FF88']],
+                    line=dict(width=0)
+                )
+            ))
+            fig_shap_bar.update_layout(
+                template='plotly_dark',
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                title=dict(text=f"Top {top_n_shap} SHAP Features — {selected_model_name}", font=dict(size=14)),
+                xaxis_title="Mean |SHAP Value|",
+                height=500,
+                margin=dict(l=10, r=10, t=40, b=40)
+            )
+            st.plotly_chart(fig_shap_bar, use_container_width=True)
+        
+        with col_shap_compare:
+            # Compare SHAP vs Traditional Feature Importance
+            traditional_imp = get_feature_importance(model, X_test.columns)
+            if traditional_imp is not None:
+                top_trad = traditional_imp.head(top_n_shap)
+                top_shap_names = set(shap_top['Feature'].values)
+                top_trad_names = set(top_trad['Feature'].values)
+                overlap = top_shap_names & top_trad_names
+                
+                # Merge for comparison
+                merged = pd.merge(
+                    shap_top.rename(columns={'SHAP_Importance': 'SHAP'}),
+                    top_trad.rename(columns={'Importance': 'Traditional'}),
+                    on='Feature', how='outer'
+                ).fillna(0).head(10)
+                
+                # Normalize for comparison
+                if merged['SHAP'].max() > 0:
+                    merged['SHAP_norm'] = merged['SHAP'] / merged['SHAP'].max()
+                else:
+                    merged['SHAP_norm'] = 0
+                if merged['Traditional'].max() > 0:
+                    merged['Trad_norm'] = merged['Traditional'] / merged['Traditional'].max()
+                else:
+                    merged['Trad_norm'] = 0
+                
+                fig_compare = go.Figure()
+                fig_compare.add_trace(go.Bar(
+                    name='SHAP',
+                    x=merged['Feature'],
+                    y=merged['SHAP_norm'],
+                    marker_color='#00D4FF'
+                ))
+                fig_compare.add_trace(go.Bar(
+                    name='Traditional',
+                    x=merged['Feature'],
+                    y=merged['Trad_norm'],
+                    marker_color='#7B2DFF'
+                ))
+                fig_compare.update_layout(
+                    template='plotly_dark',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    title=dict(text="SHAP vs Traditional Feature Importance", font=dict(size=14)),
+                    barmode='group',
+                    yaxis_title='Normalized Importance',
+                    height=500,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5),
+                    xaxis=dict(tickangle=-45),
+                    margin=dict(l=10, r=10, t=40, b=80)
+                )
+                st.plotly_chart(fig_compare, use_container_width=True)
+    else:
+        st.info("SHAP analysis is not available for this model.")
+    
+    # ============================================
     # 4. FRAUD PREDICTION INTERFACE
     # ============================================
     st.markdown("""
@@ -720,6 +820,88 @@ if df is not None and models:
                         legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
                     )
                     st.plotly_chart(fig_radar, use_container_width=True)
+            
+            # ============================================
+            # 5.5 SHAP WATERFALL - Per Transaction
+            # ============================================
+            st.markdown("""
+            <div class="section-header">
+                <h2><span class="material-icons-round">account_tree</span>SHAP Explanation — This Transaction</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown("<p style='color: #888;'>แสดงว่า features ไหนดันผลการทำนายไปทาง <span style='color:#FF2D7C'>Fraud</span> หรือ <span style='color:#00FF88'>Safe</span></p>", unsafe_allow_html=True)
+            
+            with st.spinner('Calculating SHAP for this transaction...'):
+                shap_vals, base_val = get_shap_single_values(
+                    model, features, X_test, selected_model_name
+                )
+            
+            if shap_vals is not None:
+                # Create waterfall-style horizontal bar chart
+                feat_names = features.columns.tolist()
+                shap_df = pd.DataFrame({
+                    'Feature': feat_names,
+                    'SHAP': shap_vals
+                })
+                
+                # Sort by absolute SHAP value, take top 15
+                shap_df['abs_SHAP'] = shap_df['SHAP'].abs()
+                shap_df = shap_df.sort_values('abs_SHAP', ascending=False).head(15)
+                shap_df = shap_df.sort_values('SHAP', ascending=True)
+                
+                # Color: positive = fraud (red), negative = safe (green)
+                colors = ['#FF2D7C' if v > 0 else '#00FF88' for v in shap_df['SHAP']]
+                
+                fig_waterfall = go.Figure(go.Bar(
+                    x=shap_df['SHAP'].values,
+                    y=shap_df['Feature'].values,
+                    orientation='h',
+                    marker=dict(color=colors, line=dict(width=0)),
+                    hovertemplate='%{y}: %{x:.4f}<extra></extra>'
+                ))
+                
+                fig_waterfall.update_layout(
+                    template='plotly_dark',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    title=dict(
+                        text=f"SHAP Values — Top 15 Features ({selected_model_name})",
+                        font=dict(size=14)
+                    ),
+                    xaxis_title='SHAP Value (→ Fraud | ← Safe)',
+                    height=500,
+                    margin=dict(l=10, r=10, t=40, b=40),
+                    shapes=[dict(
+                        type='line', x0=0, x1=0,
+                        y0=-0.5, y1=len(shap_df) - 0.5,
+                        line=dict(color='rgba(255,255,255,0.3)', width=1, dash='dash')
+                    )]
+                )
+                st.plotly_chart(fig_waterfall, use_container_width=True)
+                
+                # Summary info
+                col_base, col_output = st.columns(2)
+                with col_base:
+                    st.markdown(f"""
+                    <div class="glass-card" style="text-align:center;">
+                        <div style="color:#888;font-size:0.85rem;">BASE VALUE</div>
+                        <div style="font-size:1.5rem;font-weight:700;color:#00D4FF;">{base_val:.4f}</div>
+                        <div style="color:#666;font-size:0.75rem;">Average model output</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_output:
+                    output_val = base_val + shap_vals.sum()
+                    output_color = '#FF2D7C' if prediction == 1 else '#00FF88'
+                    st.markdown(f"""
+                    <div class="glass-card" style="text-align:center;">
+                        <div style="color:#888;font-size:0.85rem;">FINAL OUTPUT</div>
+                        <div style="font-size:1.5rem;font-weight:700;color:{output_color};">{output_val:.4f}</div>
+                        <div style="color:#666;font-size:0.75rem;">Base + SHAP contributions</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("SHAP analysis not available for this transaction.")
             
             # ============================================
             # 6. EXPORT BUTTON

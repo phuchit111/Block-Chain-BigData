@@ -102,3 +102,85 @@ def create_export_data(tx_data, prediction, probability, model_name):
     export_df['Fraud_Probability'] = probability
     export_df['Model_Used'] = model_name
     return export_df
+
+
+# ============================================
+# SHAP Analysis Functions
+# ============================================
+import shap
+
+@st.cache_data
+def get_shap_global_values(_model, X_sample, _model_name):
+    """
+    Calculate SHAP values for global feature importance.
+    Uses a sample of 500 rows for speed.
+    _model and _model_name are unhashable-prefixed to allow caching.
+    """
+    try:
+        # Sample background data for speed
+        if len(X_sample) > 500:
+            X_bg = X_sample.sample(500, random_state=42)
+        else:
+            X_bg = X_sample
+        
+        # Choose explainer based on model type
+        if hasattr(_model, 'feature_importances_'):
+            # Tree-based models (Random Forest, XGBoost)
+            explainer = shap.TreeExplainer(_model)
+            shap_values = explainer.shap_values(X_bg)
+            # For binary classification, take class 1 (Fraud)
+            if isinstance(shap_values, list):
+                shap_values = shap_values[1]
+        elif hasattr(_model, 'coef_'):
+            # Linear models (Logistic Regression)
+            explainer = shap.LinearExplainer(_model, X_bg)
+            shap_values = explainer.shap_values(X_bg)
+        else:
+            return None, None
+        
+        # Calculate mean absolute SHAP values per feature
+        mean_shap = np.abs(shap_values).mean(axis=0)
+        feature_importance = pd.DataFrame({
+            'Feature': X_bg.columns.tolist(),
+            'SHAP_Importance': mean_shap
+        }).sort_values('SHAP_Importance', ascending=False)
+        
+        return feature_importance, explainer
+    except Exception as e:
+        st.warning(f"SHAP calculation error: {e}")
+        return None, None
+
+
+def get_shap_single_values(model, features, X_background, model_name):
+    """
+    Calculate SHAP values for a single transaction prediction.
+    Returns shap_values array and base_value for waterfall plot.
+    """
+    try:
+        # Sample background data
+        if len(X_background) > 100:
+            X_bg = X_background.sample(100, random_state=42)
+        else:
+            X_bg = X_background
+        
+        if hasattr(model, 'feature_importances_'):
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(features)
+            if isinstance(shap_values, list):
+                shap_values = shap_values[1]
+            base_value = explainer.expected_value
+            if isinstance(base_value, (list, np.ndarray)):
+                base_value = base_value[1]
+        elif hasattr(model, 'coef_'):
+            explainer = shap.LinearExplainer(model, X_bg)
+            shap_values = explainer.shap_values(features)
+            base_value = explainer.expected_value
+            if isinstance(base_value, (list, np.ndarray)):
+                base_value = base_value[0]
+        else:
+            return None, None
+        
+        return shap_values[0], base_value
+    except Exception as e:
+        st.warning(f"SHAP single prediction error: {e}")
+        return None, None

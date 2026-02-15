@@ -8,3 +8,4 @@ matplotlib
 seaborn
 networkx
 imbalanced-learn
+shap
